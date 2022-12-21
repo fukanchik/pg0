@@ -1,3 +1,4 @@
+#define MAXPATH PATH_MAX
 #define BLKSZ 8192
 
 typedef signed int int32;
@@ -21,8 +22,8 @@ typedef struct BackupPageHeader2
 } BackupPageHeader2;
 
 void elog_init(const char *path);
-void elog(char *fmt, ...);
-void efail(char *fmt, ...);
+void elog(const char *fmt, ...);
+void efail(const char *fmt, ...);
 
 static inline long MIN(long a,long b)
 {

@@ -22,7 +22,7 @@ char *
 get_real_path(control_entry *e)
 {
   char buf[8192];
-  snprintf(buf, 8192, "%sdatabase/%s", BACKUP, e->rel_path);
+  snprintf(buf, 8192, "%s/database/%s", BACKUP, e->rel_path);
 
   return strdup(buf);
 }

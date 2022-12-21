@@ -16,7 +16,7 @@ elog_init(const char *path)
 }
 
 void
-elog(char *fmt, ...)
+elog(const char *fmt, ...)
 {
   char buf[8192];
   va_list va;
@@ -30,13 +30,18 @@ elog(char *fmt, ...)
 }
 
 void
-efail(char *fmt, ...)
+efail(const char *fmt, ...)
 {
+  char buf[8192];
   va_list va;
-  
+
   va_start(va, fmt);
-  elog(fmt, va);
+  vsnprintf(buf, 8192, fmt, va);
   va_end(va);
 
-  abort();
+  if(LOG==NULL) LOG=stderr;
+  fprintf(LOG, "%s\n", buf);
+  fflush(LOG);
+
+  exit(-1);
 }

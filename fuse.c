@@ -13,8 +13,57 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 
 #include "pg0.h"
+
+static const char usage[] = "usage: pg0\n"
+  "\n"
+  "options:\n"
+  "  --backup-path=<path>	path to pg_probackup backup\n"
+  "  --instance=<name>	name of postgres instance in pg_probackup backup\n"
+  "  --backup-id=<name>	name of postgres instance in pg_probackup backup\n"
+  "  --help		print help message\n"
+  "  --debug		enable debug logging\n";
+
+typedef struct
+{
+  char *backup_path;
+  char *instance;
+  char *backup_id;
+  int is_help;
+} pg0_args;
+
+#define KEY_HELP 0
+#define KEY_BACKUP_PATH 1
+#define KEY_INSTANCE 2
+#define KEY_BACKUP_ID 3
+
+static const struct fuse_opt command_line_options[] =
+  {
+   {"--backup-path=%s", offsetof(pg0_args, backup_path), KEY_BACKUP_PATH},
+   {"--instance=%s", offsetof(pg0_args, instance), KEY_INSTANCE},
+   {"--backup-id=%s", offsetof(pg0_args, backup_id), KEY_BACKUP_ID},
+   FUSE_OPT_KEY("--help", KEY_HELP),
+   FUSE_OPT_END
+  };
+
+static int
+process_arg(void *data, const char *arg, int key, struct fuse_args *outargs)
+{
+  pg0_args *args = data;
+
+  switch(key)
+		{
+    case KEY_HELP:
+      args->is_help = 1;
+      fprintf(stderr, "%s", usage);
+      return 0;
+    default:
+      break;
+		}
+  return 1;
+}
 
 typedef struct fs_node
 {
@@ -290,65 +339,56 @@ cstr(const void *a, const void *b)
 }
 
 char *
-select_backup(const char *base, const char * bbb)
+select_backup(pg0_args *args)
 {
-  if(bbb==NULL) {
-  DIR *d=opendir(base);
-  if(!d) efail("%s", base);
-  struct dirent *de;
-  char *backups[200];
-  int n_backups=0;
-  while(((de=readdir(d))!=NULL)) {
-    if(de->d_type != DT_DIR) continue;
-    if(!strcmp(de->d_name, ".")) continue;
-    if(!strcmp(de->d_name, "..")) continue;
-    backups[n_backups++] = strdup(de->d_name);
-    if(n_backups==200) efail("Too many backups");
+  if(!args->backup_path) {
+    fprintf(stderr, "pg_probackup backups path is required\n"); 
+    fprintf(stderr, "%s", usage);
+    exit(2);
   }
-  qsort(backups, n_backups, sizeof(char *), cstr);
-  printf("Choose:\n");
-  for(int i=0;i<n_backups;++i) {
-    printf("%d: %s\n", i+1, backups[i]);
+  if(!args->instance) {
+    fprintf(stderr, "database instance name is required\n"); 
+    fprintf(stderr, "%s", usage);
+    exit(3);
   }
-  int choice=-1;
-  scanf("%d", &choice);
-  choice--;
-  if (choice < 0 || choice >= n_backups) return NULL;
-  bbb = backups[choice];
+  if(!args->backup_id) {
+    fprintf(stderr, "backup id is required\n"); 
+    fprintf(stderr, "%s", usage);
+    exit(4);
   }
 
-  printf("Restoring at %s", bbb);
+  char buf[PATH_MAX];
+  snprintf(buf, PATH_MAX, "%s/backups/%s/%s", args->backup_path, args->instance,
+           args->backup_id);
+  char *backup = realpath(buf, NULL);
+  if(!backup || access(backup, R_OK) < 0)
+    efail("Can't access backup at %s", backup);
+
   
-  char buf[8192];
-  snprintf(buf, 8192, "/tmp/pg0-log-%s.txt", bbb);
+  fprintf(stdout, "Restoring from %s\n", backup);
+  snprintf(buf, PATH_MAX, "/tmp/pg0-log-%s.txt", args->backup_id);
   elog_init(buf);
 
-  char BACKUP[8192];
-  snprintf(BACKUP, 8192, "%s/%s/", base, bbb);
-
-  return strdup(BACKUP);
+  return backup;
 }
 
 int
 main(int argc, char *argv[])
 {
-  const char *BASE="/home/fuxx/src/pg0/bb/backups/dba1/";
-  char *backup;
-  if(argc==4) {
-    backup =  select_backup(BASE, argv[3]);
-    argc--;
-  } else {
-    backup = select_backup(BASE, NULL);
-  }
-  if(!backup) {
-    elog("Bye.");
+  struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
+  pg0_args myargs = {};
+
+  if(fuse_opt_parse(&args, &myargs, command_line_options, process_arg)) {
     return 1;
   }
-  if(access(backup, R_OK)<0) efail("Can't access %s", backup);
+  if(myargs.is_help){
+    return 0;
+  }
+
+
+  char *backup = select_backup(&myargs);
   open_backup(backup);
   free(backup);
-
-  struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
 
   int ret = fuse_main(args.argc, args.argv, &pg_oper, NULL);
 
