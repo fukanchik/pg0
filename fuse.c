@@ -115,7 +115,7 @@ pg_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
   filler(buf, ".", NULL, 0);
   filler(buf, "..", NULL, 0);
 
-  for(int i=0;i<e->n_children;++i) {
+  for(int i = 0; i < e->n_children; ++i) {
     filler(buf, e->children[i]->name, NULL, 0);
     elog("...%d: <%s>", i+1, e->children[i]->name);
   }
@@ -132,19 +132,17 @@ pg_getattr(const char *path, struct stat *st)
     elog("...ENOENT");
     return -ENOENT;
   }
+  memset(st, 0, sizeof(struct stat));
+
   st->st_uid = getuid();
   st->st_gid = getgid();
   //memcpy(&st->st_mtim, &e->mtime, sizeof(struct timespec));
   st->st_mode = e->mode;
   if((e->mode & S_IFMT) == S_IFDIR)
-    st->st_nlink=2+e->n_children;
+    st->st_nlink = 2 + e->n_children;
   else
     st->st_nlink = 1;
-  if(e->is_datafile && e->size) {
-    st->st_size = e->n_headers * BLKSZ;
-  } else {
-    st->st_size = e->size;
-  }
+  st->st_size = get_entry_size(e);
 
   elog("...mode=0%o, size=%ld", st->st_mode, st->st_size);
 
@@ -167,9 +165,9 @@ pg_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     return -EACCES;
   }
 
-  int ret=CE_add_child(parent, path, mode);
-  elog("...=>%d", ret);
-  return ret;
+  control_entry *ret=CE_add_child(parent, path, mode);
+  elog("...=>%s", ret->rel_path);
+  return ret == NULL;
 }
 
 static int
@@ -332,12 +330,6 @@ pg_oper = {
            .init = pg_init,
 };
   
-int
-cstr(const void *a, const void *b)
-{
-  return strcmp(*(const char **)a, *(const char **)b);
-}
-
 char *
 select_backup(pg0_args *args)
 {

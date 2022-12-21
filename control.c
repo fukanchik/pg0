@@ -10,17 +10,56 @@
 
 #include "pg0.h"
 
+static int null_opener(struct _ce *e, int flags);
+static int log_file_reader(control_entry *e, char *buf, size_t size, off_t offset);
+static int memory_writer(control_entry *e, const char *buf, size_t size, off_t offset);
+static off_t log_file_sizer(control_entry *e);
+
+typedef off_t (*get_size)(control_entry *e);
+
+#define NSIZERS 1
+static get_size SIZERS[] = {log_file_sizer};
+#define LOG_SIZE_INDEX -1
+
+off_t
+get_entry_size(control_entry *e)
+{
+  elog("get_entry_size(rel_path=%s, is_datafile=%d, size=%d)",
+       e->rel_path, e->is_datafile, e->size);
+
+  off_t ret;
+  if(e->is_datafile && e->size) {
+    ret = e->n_headers * BLKSZ;
+  } else if(e->size >= 0) {
+    ret = e->size;
+  } else if (e->size < 0) {
+    int index = -(e->size+1);
+    elog("...INDEX=%d, size=%d", index, e->size);
+    if(index < 0 || index > NSIZERS) {
+      elog("get_entry_size(): index=%d", index);
+      return -ENOENT;
+    }
+    ret = SIZERS[index](e);
+  } else {
+    elog("XXX: EIO");
+    ret = -EIO;
+  }
+  return ret;
+}
+
 static const char *BACKUP;
 
 static void
-elog_entry(control_entry *e)
+elog_entry(const char *msg, control_entry *e)
 {
-  elog("[%s, %s, %s, %ld, 0%o]", e->absolute_path, e->rel_path, e->name, e->size, e->mode);
+  elog("%s: [%s, %s, %s, %ld, 0%o]", msg, e->absolute_path, e->rel_path, e->name,
+       e->size, e->mode);
 }
 
 char *
 get_real_path(control_entry *e)
 {
+  /* TODO fail if not a data entry. */
   char buf[8192];
   snprintf(buf, 8192, "%s/database/%s", BACKUP, e->rel_path);
 
@@ -28,11 +67,11 @@ get_real_path(control_entry *e)
 }
 
 static control_entry root = {.absolute_path = NULL,
-                             .rel_path="/",
-                             .name="",
+                             .rel_path = "/",
+                             .name = "",
                              .size=4192,
                              .mode=S_IFDIR|0700,
-                             .is_datafile = false,
+                             .is_datafile = 0,
                              .children = NULL,
                              .n_children=0,
                              .handle=-1,
@@ -44,13 +83,35 @@ static control_entry root = {.absolute_path = NULL,
                              .my_data=NULL,
 };
 
-static int writer2(control_entry *e, const char *buf, size_t size, off_t offset);
+static control_entry log_file = {.absolute_path = NULL,
+                                 .rel_path = INTERNAL_LOG_PATH,
+                                 .name = INTERNAL_LOG_PATH,
+                                 .size = -1,
+                                 .mode = S_IFREG|0400,
+                                 .is_datafile = 0,
+                                 .children = NULL,
+                                 .n_children = 0,
+                                 .handle = -1,
+                                 .write_buf = NULL,
+                                 .wb_size = 0,
+                                 .open = null_opener,
+                                 .read = log_file_reader,
+                                 .write = NULL,
+                                 .my_data = NULL,
+};
+
+static int
+null_opener(struct _ce *e, int flags)
+{
+  elog("Null Opener flags=%x rel_path=%s name=%s", flags, e->rel_path, e->name);
+  return 0;
+}
 
 /* Opens real files. */
 static int
 opener(struct _ce *e, int flags)
 {
-  elog("Opener %x %p %s %s", flags, e, e->rel_path, e->name);
+  elog("Opener flas=0x%x %p %s name=%s", flags, e, e->rel_path, e->name);
   if(e->size && (e->mode & S_IFMT) == S_IFREG) {
     int h = open(e->absolute_path, O_RDONLY);//fi->flags);
     if(h==-1) {
@@ -60,8 +121,8 @@ opener(struct _ce *e, int flags)
     e->handle = h;
     elog("...=>%d", h);
     if((flags&O_RDWR) == O_RDWR || (flags&O_WRONLY) == O_WRONLY) {
-      elog("...setting writer2");
-      e->write = writer2;
+      elog("...setting memory writer");
+      e->write = memory_writer;
     }
     return 0;
   }
@@ -74,6 +135,33 @@ opener2(struct _ce *e, int flags)
 {
   elog("opener2 %s %x", e->rel_path, flags);
   return 0;
+}
+
+static off_t
+log_file_sizer(control_entry *e)
+{
+  elog("log_file_sizer(rel_path=%s)", e->rel_path);
+
+  const char *log = elog_get_path();
+  struct stat st;
+
+  if(stat(log, &st) < 0) return -errno;
+
+  return st.st_size;
+}
+
+static int
+log_file_reader(control_entry *e, char *buf, size_t size, off_t offset)
+{
+  elog("log_file_reader(rel_path=%s, size=%ld, offset=%ld)", e->rel_path, size, offset);
+  const char *log = elog_get_path();
+  int fd = open(log, O_RDONLY);
+  if(fd<0) return -errno;
+  int rc = lseek(fd, offset, SEEK_SET);
+  if (rc < 0) { close(fd); return -errno; }
+  rc = read(fd, buf, size);
+  close(fd);
+  return rc;
 }
 
 static int
@@ -101,9 +189,9 @@ reader2(control_entry *e, char *buf, size_t size, off_t offset)
 }
 
 static int
-writer2(control_entry *e, const char *buf, size_t size, off_t offset)
+memory_writer(control_entry *e, const char *buf, size_t size, off_t offset)
 {
-  elog("writer2(rel_path=%s, size=%ld, offset=%ld)", e->rel_path, size, offset);
+  elog("memory_writer(rel_path=%s, size=%ld, offset=%ld)", e->rel_path, size, offset);
 
   if (e->read != reader2) {
     if(e->is_datafile && e->size) {
@@ -121,7 +209,7 @@ writer2(control_entry *e, const char *buf, size_t size, off_t offset)
       off_t rc = lseek(e->handle, 0, SEEK_SET);
       if(rc != 0) abort();
       int ret=read(e->handle, e->write_buf, e->size);
-      if(ret != e->size) efail("...writer2: %d != %d", ret, e->size);
+      if(ret != e->size) efail("...memory writer: %d != %d", ret, e->size);
       e->wb_size = e->size;
     }
     e->read = reader2;
@@ -230,7 +318,7 @@ build_entry(const char *path, size_t size, mode_t mode, bool is_datafile, bool i
   } else if(ret->size == 0 && (ret->mode & S_IFMT) == S_IFREG) {
     ret->open = opener2;
     ret->read = reader2;
-    ret->write = writer2;
+    ret->write = memory_writer;
   } else {
     ret->open = NULL;
     ret->read = NULL;
@@ -279,11 +367,11 @@ CE_link(control_entry *e, const char *to)
   control_entry *copy = build_entry(to+1, e->size, e->mode, e->is_datafile, true, e->n_headers, e->hdr_off, e->hdr_size);
   copy->open = opener2;
   copy->read = reader2;
-  copy->write = writer2;
+  copy->write = memory_writer;
   
   grow_children(to_parent, copy);
-  elog_entry(e);
-  elog_entry(copy);
+  elog_entry("CE_link source", e);
+  elog_entry("CE_link copy",copy);
   return 0;
 }
 
@@ -306,7 +394,7 @@ CE_rename(control_entry *e, const char *to)
 {
   control_entry *to_e = entry_for_path(to);
   if(to_e) {
-    elog_entry(to_e);
+    elog_entry("CE_rename to", to_e);
     elog("CE_rename=>already exists %s", to);
     //return -EACCES;
     CE_unlink(to_e);
@@ -333,7 +421,7 @@ CE_add_child_dir(control_entry *e, const char *path, mode_t mode)
   for(int i=0;i<e->n_children;++i) {
     if(!strcmp(e->name, fname)) return -EEXIST;
   }
-  control_entry *child = build_entry(path+1, 0, mode|S_IFDIR, false, true, -1, -1, -1);
+  control_entry *child = build_entry(path+1, 0, mode|S_IFDIR, 0, true, -1, -1, -1);
 
   elog("...%s: add child %s (%s)", e->rel_path, path, fname);
   child->open = NULL;
@@ -346,23 +434,26 @@ CE_add_child_dir(control_entry *e, const char *path, mode_t mode)
   return 0;
 }
 
-int
+control_entry*
 CE_add_child(control_entry *e, const char *path, mode_t mode)
 {
   char *fname = get_file_name(path);
-  for(int i=0;i<e->n_children;++i) {
-    if(!strcmp(e->name, fname)) return -EEXIST;
+
+  /* Prevent adding the same entry twice. */
+  for(int i = 0; i < e->n_children; ++i) {
+    if(!strcmp(e->name, fname)) return NULL;
   }
-  control_entry *child = build_entry(path+1, 0, mode, false, true, -1, -1, -1);
-  elog_entry(child);
+
+  control_entry *child = build_entry(path+1, 0, mode, 0, true, -1, -1, -1);
+  elog_entry("CE_add_child", child);
 
   child->open = opener2;
   child->read = reader2;
-  child->write = writer2;
+  child->write = memory_writer;
 
   grow_children(e, child);
 
-  return 0;
+  return child;
 }
 
 control_entry *parent_entry(const char *path)
@@ -484,9 +575,9 @@ build_tree(const char *prefix, control_entry *parent)
   control_entry *children[1000];
   int n_children = 0;
 
-  for(int i=0;i<n_entries;++i) {
+  for(int i = 0; i < n_entries; ++i) {
     control_entry *entry  = entries[i];
-    if(entry==NULL) continue;
+    if(entry == NULL) continue;
     if(!strncmp(prefix, entry->rel_path, plen) && !strchr(entry->rel_path+plen, '/')) {
       children[n_children++] = entry;
       if(n_children>=1000)abort();
@@ -544,4 +635,9 @@ open_backup(const char *backup)
 {
   BACKUP = strdup(backup);
   read_contents(backup);
+  control_entry *log = CE_add_child(&root, INTERNAL_LOG_PATH, 0400);
+  log->size = LOG_SIZE_INDEX;
+  log->mode = S_IFREG | log->mode;
+  log->read = log_file_reader;
+  elog("ERR=%s, size=%d", log->rel_path, log->size);
 }
