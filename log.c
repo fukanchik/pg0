@@ -1,8 +1,10 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <string.h>
 
 static FILE *LOG=NULL;
+static char *LOG_PATH=NULL;
 
 void
 elog_init(const char *path)
@@ -13,6 +15,13 @@ elog_init(const char *path)
     fprintf(stderr, "Can't open logfile %s for append", path);
     abort();
   }
+  LOG_PATH = strdup(path);
+}
+
+const char *
+elog_get_path()
+{
+  return LOG_PATH;
 }
 
 void
