@@ -364,7 +364,7 @@ CE_link(control_entry *e, const char *to)
   control_entry *to_e = entry_for_path(to);
   if(to_e) return -EACCES;
   control_entry *to_parent = parent_entry(to);
-  control_entry *copy = build_entry(to+1, e->size, e->mode, e->is_datafile, true, e->n_headers, e->hdr_off, e->hdr_size);
+  control_entry *copy = build_entry(to+1, e->size, e->mode, e->is_datafile, 1, e->n_headers, e->hdr_off, e->hdr_size);
   copy->open = opener2;
   copy->read = reader2;
   copy->write = memory_writer;
@@ -421,7 +421,7 @@ CE_add_child_dir(control_entry *e, const char *path, mode_t mode)
   for(int i=0;i<e->n_children;++i) {
     if(!strcmp(e->name, fname)) return -EEXIST;
   }
-  control_entry *child = build_entry(path+1, 0, mode|S_IFDIR, 0, true, -1, -1, -1);
+  control_entry *child = build_entry(path+1, 0, mode|S_IFDIR, 0, 1, -1, -1, -1);
 
   elog("...%s: add child %s (%s)", e->rel_path, path, fname);
   child->open = NULL;
@@ -444,7 +444,7 @@ CE_add_child(control_entry *e, const char *path, mode_t mode)
     if(!strcmp(e->name, fname)) return NULL;
   }
 
-  control_entry *child = build_entry(path+1, 0, mode, 0, true, -1, -1, -1);
+  control_entry *child = build_entry(path+1, 0, mode, 0, 1, -1, -1, -1);
   elog_entry("CE_add_child", child);
 
   child->open = opener2;
